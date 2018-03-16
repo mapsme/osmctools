@@ -515,7 +515,7 @@ static int global_max_merge= 7;
 static const char* global_gzip_parameters= "";
   // parameters for gzip compression
 static char global_base_url[400]=
-  "http://planet.openstreetmap.org/replication";
+  "https://planet.openstreetmap.org/replication";
 static char global_base_url_suffix[100]="";
   // for old replication URL, to get "day-replication" instead of "day"
 
