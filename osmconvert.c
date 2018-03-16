@@ -1,10 +1,10 @@
-// osmconvert 2015-04-13 14:20
-#define VERSION "0.8.4"
+// osmconvert 2017-06-18 21:30
+#define VERSION "0.8.8"
 //
 // compile this file:
 // gcc osmconvert.c -lz -O3 -o osmconvert
 //
-// (c) 2011..2015 Markus Weber, Nuernberg
+// (c) 2011..2017 Markus Weber, Nuernberg
 // Richard Russo contributed the initiative to --add-bbox-tags option
 //
 // This program is free software; you can redistribute it and/or
@@ -18,8 +18,6 @@
 // with this program; if not, see http://www.gnu.org/licenses/.
 //
 // Other licenses are available on request; please ask the author.
-//
-// Modified on 20.08.2015 by Ilya Zverev, increasing border_edge.
 
 #define MAXLOGLEVEL 2
 const char* shorthelptext=
@@ -31,11 +29,14 @@ const char* shorthelptext=
 "-b=<x1>,<y1>,<x2>,<y2>    apply a border box\n"
 "-B=<border_polygon>       apply a border polygon\n"
 "--complete-ways           do not clip ways at the borders\n"
-"--complex-ways            do not clip multipolygons at the borders\n"
+"--complete-multipolygons  do not clip multipolygons at the borders\n"
+"--complete-boundaries     do not clip boundaries at the borders\n"
 "--all-to-nodes            convert ways and relations to nodes\n"
-"--add-bbox-tags           adds bbox tags to ways and relations\n"
-"--add-bboxarea-tags       adds tags for estimated bbox areas\n"
-"--add-bboxweight-tags     adds tags for log2 of bbox areas\n"
+"--add-bbox-tags           add bbox tags to ways and relations\n"
+"--add-bboxarea-tags       add tags for estimated bbox areas\n"
+"--add-bboxweight-tags     add tags for log2 of bbox areas\n"
+"--add-bboxwidth-tags      add tags for estimated bbox widths\n"
+"--add-bboxwidthweight-tags add tags for log2 of bbox widths\n"
 "--object-type-offset=<id> offset for ways/relations if --all-to-nodes\n"
 "--max-objects=<n>         space for --all-to-nodes, 1 obj. = 16 bytes\n"
 "--drop-broken-refs        delete references to excluded nodes\n"
@@ -44,6 +45,8 @@ const char* shorthelptext=
 "--drop-nodes              delete all nodes\n"
 "--drop-ways               delete all ways\n"
 "--drop-relations          delete all relations\n"
+"--modify-tags=            define which tags are to be modified\n"
+"--modify-...-tags=        similar to --keep-...-tags= (see above)\n"
 "--diff                    calculate differences between two files\n"
 "--diff-contents           same as before, but compare whole contents\n"
 "--subtract                subtract objects given by following files\n"
@@ -119,9 +122,9 @@ const char* helptext=
 "        from standard input. It is recommended to use .o5m format as\n"
 "        input format to compensate most of the speed disadvantage.\n"
 "\n"
-"--complex-ways\n"
-"        Same as before, but multipolygons will not be cut at the\n"
-"        borders too.\n"
+"--complete-multipolygons, --complete-boundaries\n"
+"        Same as before, but multipolygons resp. boundaries will not\n"
+"        be cut at the borders too.\n"
 "\n"
 "--all-to-nodes\n"
 "        Some applications do not have the ability to process ways or\n"
@@ -139,7 +142,7 @@ const char* helptext=
 "--add-bbox-tags\n"
 "        This option adds a tag with a bounding box to each object.\n"
 "        The tag will contain the border coordinates in this order:\n"
-"        min Longitude, min Latitude, max Longitude , max Latitude.\n"
+"        min Longitude, min Latitude, max Longitude, max Latitude.\n"
 "        e.g.:  <tag k=\"bBox\" v=\"-0.5000,51.0000,0.5000,52.0000\"/>\n"
 "\n"
 "--add-bboxarea-tags\n"
@@ -151,6 +154,16 @@ const char* helptext=
 "        This option will add the binary logarithm of the bbox area\n"
 "        of each way and each relation.\n"
 "        For example:  <tag k=\"bBoxWeight\" v=\"20\"/>\n"
+"\n"
+"--add-bboxwidth-tags\n"
+"        A tag for an estimated width value for the bbox is added to\n"
+"        each way and each relation. The unit is meters.\n"
+"        For example:  <tag k=\"bBoxWidth\" v=\"825\"/>\n"
+"\n"
+"--add-bboxwidthweight-tags\n"
+"        This option will add the binary logarithm of the bbox width\n"
+"        of each way and each relation.\n"
+"        For example:  <tag k=\"bBoxWidthWeight\" v=\"10\"/>\n"
 "\n"
 "--object-type-offset=<id offset>\n"
 "        If applying the --all-to-nodes option as explained above, you\n"
@@ -181,6 +194,22 @@ const char* helptext=
 "--drop-relations\n"
 "        According to the combination of these parameters, no members\n"
 "        of the referred section will be written.\n"
+"\n"
+"--modify-tags=<tag_modification_list>\n"
+"        The tag modification list determines which tags will be\n"
+"        modified. The example\n"
+"          --modify-tags=\"highway=primary to =secondary\"\n"
+"        will change every \"primary\" highway into \"secondary\".\n"
+"        You can also use comparisons or add additional tags:\n"
+"          --modify-way-tags=\"maxspeed>200 add highspeed=yes\"\n"
+"\n"
+"--modify-node-tags=TAG_MODIFICATION_LIST\n"
+"--modify-way-tags=TAG_MODIFICATION_LIST\n"
+"--modify-relation-tags=TAG_MODIFICATION_LIST\n"
+"--modify-node-way-tags=TAG_MODIFICATION_LIST\n"
+"--modify-node-relation-tags=TAG_MODIFICATION_LIST\n"
+"--modify-way-relation-tags=TAG_MODIFICATION_LIST\n"
+"        Same as above, but just for the specified object types.\n"
 "\n"
 "--diff\n"
 "        Calculate difference between two files and create a new .osc\n"
@@ -320,7 +349,7 @@ const char* helptext=
 "-o=<outfile>\n"
 "        Standard output will be rerouted to the specified file.\n"
 "        If no output format has been specified, the program will\n"
-"        rely  the file name extension.\n"
+"        rely on the file name\'s extension.\n"
 "\n"
 "-t=<tempfile>\n"
 "        If borders are to be applied or broken references to be\n"
@@ -446,6 +475,44 @@ typedef enum {false= 0,true= 1} bool;
 typedef uint8_t byte;
 typedef unsigned int uint;
 #define isdig(x) isdigit((unsigned char)(x))
+static byte isdigi_tab[]= {
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+#define isdigi(c) (isdigi_tab[(c)])  // digit
+static byte digival_tab[]= {
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  1,2,3,4,5,6,7,8,9,10,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+#define digival(c) (digival_tab[(c)])
+  // value of a digit, starting with 1, for comparisons only
+
 static int loglevel= 0;  // logging to stderr;
   // 0: no logging; 1: small logging; 2: normal logging;
   // 3: extended logging;
@@ -531,8 +598,14 @@ static char global_csvseparator[16]= "\t";  // separator for csv
 static bool global_completeways= false;  // when applying borders,
   // do not clip ways but include them as whole if at least a single
   // of its nodes lies inside the borders;
-static bool global_complexways= false;  // same as global_completeways,
+static bool global_complex= false;  // one of the following complex
+  // operations has been invoked:
+  // --complete-multipolygons, --complete-boundaries
+static bool global_completemp= false;  // same as global_completeways,
   // but multipolygons are included completely (with all ways and their
+  // nodes), even when only a single nodes lies inside the borders;
+static bool global_completeboundaries= false;  // same as global_completeways,
+  // but boundaries are included completely (with all ways and their
   // nodes), even when only a single nodes lies inside the borders;
 static int global_calccoords= 0;
   // calculate coordinates for all objects;
@@ -542,13 +615,19 @@ static bool global_alltonodes= false;
   // convert all ways and all relations to nodes
 static bool global_add= false;
   // add at least one tag shall be added;
-  // global_add==global_addbbox|global_addbboxarea|global_addbboxweight
+  // global_add == global_addbbox || global_addbboxarea ||
+  //               global_addbboxweight ||
+  //               global_addbboxwidth || global_addbboxwidthweight
 static bool global_addbbox= false;
   // add bBox tags to ways and relations
 static bool global_addbboxarea= false;
   // add bBoxArea tags to ways and relations
 static bool global_addbboxweight= false;
   // add bBoxWeight tags to ways and relations
+static bool global_addbboxwidth= false;
+  // add bBoxWidth tags to ways and relations
+static bool global_addbboxwidthweight= false;
+  // add bBoxWidthWeight tags to ways and relations
 static int64_t global_maxobjects= 25000000;
 static int64_t global_otypeoffset10= INT64_C(1000000000000000);
   // if global_calccoords!=0:
@@ -930,6 +1009,368 @@ int main() {
   printf(" };  // cosrk values for 10th degrees from 0 to 90\n");
   return 0; }
 #endif
+
+static int32_t lonadapt(int32_t londiff,int32_t lat) {
+  // takes a West-East distance given in longitude difference,
+  // and calculates the adjusted distance in degrees,
+  // i.e., it takes the latitude into account;
+  // all units: 100 nano degrees;
+  // londiff: West-East distance between two points;
+  // lat: latitude at which the distance is to be calculated;
+  // return: West-East distance in Equator degrees;
+  //         this adjusted longitude difference is then comparable
+  //         to latitude differences;
+  static const uint32_t cosrtab[901]= {
+    UINT32_C(4294967295),UINT32_C(4294960754),UINT32_C(4294941129),
+    UINT32_C(4294908421),UINT32_C(4294862630),UINT32_C(4294803756),
+    UINT32_C(4294731800),UINT32_C(4294646761),UINT32_C(4294548639),
+    UINT32_C(4294437436),UINT32_C(4294313151),UINT32_C(4294175785),
+    UINT32_C(4294025338),UINT32_C(4293861811),UINT32_C(4293685204),
+    UINT32_C(4293495517),UINT32_C(4293292752),UINT32_C(4293076909),
+    UINT32_C(4292847988),UINT32_C(4292605991),UINT32_C(4292350917),
+    UINT32_C(4292082769),UINT32_C(4291801546),UINT32_C(4291507249),
+    UINT32_C(4291199879),UINT32_C(4290879438),UINT32_C(4290545926),
+    UINT32_C(4290199345),UINT32_C(4289839694),UINT32_C(4289466976),
+    UINT32_C(4289081192),UINT32_C(4288682342),UINT32_C(4288270429),
+    UINT32_C(4287845452),UINT32_C(4287407414),UINT32_C(4286956316),
+    UINT32_C(4286492159),UINT32_C(4286014944),UINT32_C(4285524674),
+    UINT32_C(4285021349),UINT32_C(4284504971),UINT32_C(4283975542),
+    UINT32_C(4283433063),UINT32_C(4282877536),UINT32_C(4282308963),
+    UINT32_C(4281727345),UINT32_C(4281132684),UINT32_C(4280524982),
+    UINT32_C(4279904241),UINT32_C(4279270462),UINT32_C(4278623648),
+    UINT32_C(4277963801),UINT32_C(4277290922),UINT32_C(4276605014),
+    UINT32_C(4275906079),UINT32_C(4275194118),UINT32_C(4274469135),
+    UINT32_C(4273731130),UINT32_C(4272980107),UINT32_C(4272216068),
+    UINT32_C(4271439015),UINT32_C(4270648951),UINT32_C(4269845877),
+    UINT32_C(4269029797),UINT32_C(4268200712),UINT32_C(4267358626),
+    UINT32_C(4266503540),UINT32_C(4265635459),UINT32_C(4264754383),
+    UINT32_C(4263860316),UINT32_C(4262953261),UINT32_C(4262033219),
+    UINT32_C(4261100196),UINT32_C(4260154192),UINT32_C(4259195210),
+    UINT32_C(4258223255),UINT32_C(4257238328),UINT32_C(4256240433),
+    UINT32_C(4255229573),UINT32_C(4254205750),UINT32_C(4253168969),
+    UINT32_C(4252119232),UINT32_C(4251056542),UINT32_C(4249980902),
+    UINT32_C(4248892316),UINT32_C(4247790788),UINT32_C(4246676320),
+    UINT32_C(4245548916),UINT32_C(4244408579),UINT32_C(4243255313),
+    UINT32_C(4242089121),UINT32_C(4240910007),UINT32_C(4239717975),
+    UINT32_C(4238513027),UINT32_C(4237295169),UINT32_C(4236064403),
+    UINT32_C(4234820733),UINT32_C(4233564163),UINT32_C(4232294697),
+    UINT32_C(4231012338),UINT32_C(4229717092),UINT32_C(4228408960),
+    UINT32_C(4227087949),UINT32_C(4225754060),UINT32_C(4224407300),
+    UINT32_C(4223047671),UINT32_C(4221675178),UINT32_C(4220289825),
+    UINT32_C(4218891617),UINT32_C(4217480557),UINT32_C(4216056649),
+    UINT32_C(4214619899),UINT32_C(4213170311),UINT32_C(4211707888),
+    UINT32_C(4210232636),UINT32_C(4208744558),UINT32_C(4207243661),
+    UINT32_C(4205729947),UINT32_C(4204203421),UINT32_C(4202664089),
+    UINT32_C(4201111955),UINT32_C(4199547024),UINT32_C(4197969300),
+    UINT32_C(4196378788),UINT32_C(4194775494),UINT32_C(4193159421),
+    UINT32_C(4191530576),UINT32_C(4189888962),UINT32_C(4188234585),
+    UINT32_C(4186567450),UINT32_C(4184887562),UINT32_C(4183194926),
+    UINT32_C(4181489547),UINT32_C(4179771431),UINT32_C(4178040583),
+    UINT32_C(4176297007),UINT32_C(4174540710),UINT32_C(4172771696),
+    UINT32_C(4170989972),UINT32_C(4169195542),UINT32_C(4167388411),
+    UINT32_C(4165568586),UINT32_C(4163736073),UINT32_C(4161890875),
+    UINT32_C(4160033000),UINT32_C(4158162453),UINT32_C(4156279239),
+    UINT32_C(4154383364),UINT32_C(4152474835),UINT32_C(4150553656),
+    UINT32_C(4148619834),UINT32_C(4146673374),UINT32_C(4144714283),
+    UINT32_C(4142742567),UINT32_C(4140758231),UINT32_C(4138761281),
+    UINT32_C(4136751725),UINT32_C(4134729567),UINT32_C(4132694813),
+    UINT32_C(4130647471),UINT32_C(4128587546),UINT32_C(4126515045),
+    UINT32_C(4124429974),UINT32_C(4122332339),UINT32_C(4120222147),
+    UINT32_C(4118099404),UINT32_C(4115964116),UINT32_C(4113816290),
+    UINT32_C(4111655933),UINT32_C(4109483051),UINT32_C(4107297651),
+    UINT32_C(4105099740),UINT32_C(4102889323),UINT32_C(4100666409),
+    UINT32_C(4098431003),UINT32_C(4096183113),UINT32_C(4093922745),
+    UINT32_C(4091649906),UINT32_C(4089364603),UINT32_C(4087066843),
+    UINT32_C(4084756634),UINT32_C(4082433981),UINT32_C(4080098893),
+    UINT32_C(4077751376),UINT32_C(4075391437),UINT32_C(4073019085),
+    UINT32_C(4070634325),UINT32_C(4068237165),UINT32_C(4065827612),
+    UINT32_C(4063405675),UINT32_C(4060971359),UINT32_C(4058524674),
+    UINT32_C(4056065625),UINT32_C(4053594220),UINT32_C(4051110468),
+    UINT32_C(4048614376),UINT32_C(4046105950),UINT32_C(4043585200),
+    UINT32_C(4041052132),UINT32_C(4038506754),UINT32_C(4035949074),
+    UINT32_C(4033379100),UINT32_C(4030796840),UINT32_C(4028202301),
+    UINT32_C(4025595491),UINT32_C(4022976419),UINT32_C(4020345093),
+    UINT32_C(4017701519),UINT32_C(4015045707),UINT32_C(4012377664),
+    UINT32_C(4009697399),UINT32_C(4007004920),UINT32_C(4004300235),
+    UINT32_C(4001583352),UINT32_C(3998854279),UINT32_C(3996113026),
+    UINT32_C(3993359599),UINT32_C(3990594008),UINT32_C(3987816261),
+    UINT32_C(3985026366),UINT32_C(3982224332),UINT32_C(3979410168),
+    UINT32_C(3976583882),UINT32_C(3973745482),UINT32_C(3970894978),
+    UINT32_C(3968032377),UINT32_C(3965157689),UINT32_C(3962270923),
+    UINT32_C(3959372087),UINT32_C(3956461190),UINT32_C(3953538241),
+    UINT32_C(3950603249),UINT32_C(3947656222),UINT32_C(3944697170),
+    UINT32_C(3941726103),UINT32_C(3938743027),UINT32_C(3935747954),
+    UINT32_C(3932740892),UINT32_C(3929721850),UINT32_C(3926690837),
+    UINT32_C(3923647863),UINT32_C(3920592937),UINT32_C(3917526068),
+    UINT32_C(3914447266),UINT32_C(3911356540),UINT32_C(3908253899),
+    UINT32_C(3905139352),UINT32_C(3902012910),UINT32_C(3898874582),
+    UINT32_C(3895724377),UINT32_C(3892562305),UINT32_C(3889388376),
+    UINT32_C(3886202598),UINT32_C(3883004983),UINT32_C(3879795540),
+    UINT32_C(3876574278),UINT32_C(3873341207),UINT32_C(3870096337),
+    UINT32_C(3866839679),UINT32_C(3863571241),UINT32_C(3860291034),
+    UINT32_C(3856999068),UINT32_C(3853695353),UINT32_C(3850379899),
+    UINT32_C(3847052716),UINT32_C(3843713815),UINT32_C(3840363204),
+    UINT32_C(3837000896),UINT32_C(3833626899),UINT32_C(3830241224),
+    UINT32_C(3826843881),UINT32_C(3823434882),UINT32_C(3820014235),
+    UINT32_C(3816581952),UINT32_C(3813138044),UINT32_C(3809682519),
+    UINT32_C(3806215390),UINT32_C(3802736666),UINT32_C(3799246359),
+    UINT32_C(3795744478),UINT32_C(3792231035),UINT32_C(3788706040),
+    UINT32_C(3785169504),UINT32_C(3781621438),UINT32_C(3778061852),
+    UINT32_C(3774490758),UINT32_C(3770908165),UINT32_C(3767314086),
+    UINT32_C(3763708532),UINT32_C(3760091512),UINT32_C(3756463038),
+    UINT32_C(3752823122),UINT32_C(3749171773),UINT32_C(3745509004),
+    UINT32_C(3741834826),UINT32_C(3738149249),UINT32_C(3734452286),
+    UINT32_C(3730743946),UINT32_C(3727024242),UINT32_C(3723293185),
+    UINT32_C(3719550786),UINT32_C(3715797057),UINT32_C(3712032009),
+    UINT32_C(3708255653),UINT32_C(3704468001),UINT32_C(3700669065),
+    UINT32_C(3696858856),UINT32_C(3693037385),UINT32_C(3689204665),
+    UINT32_C(3685360707),UINT32_C(3681505523),UINT32_C(3677639124),
+    UINT32_C(3673761523),UINT32_C(3669872731),UINT32_C(3665972759),
+    UINT32_C(3662061621),UINT32_C(3658139327),UINT32_C(3654205890),
+    UINT32_C(3650261321),UINT32_C(3646305633),UINT32_C(3642338838),
+    UINT32_C(3638360948),UINT32_C(3634371974),UINT32_C(3630371930),
+    UINT32_C(3626360827),UINT32_C(3622338677),UINT32_C(3618305493),
+    UINT32_C(3614261287),UINT32_C(3610206072),UINT32_C(3606139859),
+    UINT32_C(3602062661),UINT32_C(3597974491),UINT32_C(3593875360),
+    UINT32_C(3589765282),UINT32_C(3585644269),UINT32_C(3581512334),
+    UINT32_C(3577369488),UINT32_C(3573215746),UINT32_C(3569051119),
+    UINT32_C(3564875619),UINT32_C(3560689261),UINT32_C(3556492056),
+    UINT32_C(3552284017),UINT32_C(3548065158),UINT32_C(3543835490),
+    UINT32_C(3539595027),UINT32_C(3535343783),UINT32_C(3531081768),
+    UINT32_C(3526808998),UINT32_C(3522525484),UINT32_C(3518231240),
+    UINT32_C(3513926279),UINT32_C(3509610614),UINT32_C(3505284258),
+    UINT32_C(3500947224),UINT32_C(3496599526),UINT32_C(3492241177),
+    UINT32_C(3487872189),UINT32_C(3483492577),UINT32_C(3479102354),
+    UINT32_C(3474701532),UINT32_C(3470290126),UINT32_C(3465868149),
+    UINT32_C(3461435615),UINT32_C(3456992536),UINT32_C(3452538927),
+    UINT32_C(3448074800),UINT32_C(3443600170),UINT32_C(3439115051),
+    UINT32_C(3434619455),UINT32_C(3430113397),UINT32_C(3425596890),
+    UINT32_C(3421069948),UINT32_C(3416532585),UINT32_C(3411984814),
+    UINT32_C(3407426650),UINT32_C(3402858107),UINT32_C(3398279197),
+    UINT32_C(3393689936),UINT32_C(3389090338),UINT32_C(3384480415),
+    UINT32_C(3379860183),UINT32_C(3375229655),UINT32_C(3370588846),
+    UINT32_C(3365937769),UINT32_C(3361276439),UINT32_C(3356604870),
+    UINT32_C(3351923076),UINT32_C(3347231071),UINT32_C(3342528871),
+    UINT32_C(3337816488),UINT32_C(3333093938),UINT32_C(3328361235),
+    UINT32_C(3323618393),UINT32_C(3318865426),UINT32_C(3314102350),
+    UINT32_C(3309329178),UINT32_C(3304545926),UINT32_C(3299752607),
+    UINT32_C(3294949237),UINT32_C(3290135830),UINT32_C(3285312400),
+    UINT32_C(3280478963),UINT32_C(3275635533),UINT32_C(3270782125),
+    UINT32_C(3265918753),UINT32_C(3261045433),UINT32_C(3256162179),
+    UINT32_C(3251269007),UINT32_C(3246365930),UINT32_C(3241452965),
+    UINT32_C(3236530125),UINT32_C(3231597426),UINT32_C(3226654884),
+    UINT32_C(3221702512),UINT32_C(3216740326),UINT32_C(3211768342),
+    UINT32_C(3206786574),UINT32_C(3201795038),UINT32_C(3196793749),
+    UINT32_C(3191782721),UINT32_C(3186761971),UINT32_C(3181731513),
+    UINT32_C(3176691364),UINT32_C(3171641537),UINT32_C(3166582049),
+    UINT32_C(3161512915),UINT32_C(3156434151),UINT32_C(3151345772),
+    UINT32_C(3146247793),UINT32_C(3141140230),UINT32_C(3136023098),
+    UINT32_C(3130896414),UINT32_C(3125760193),UINT32_C(3120614449),
+    UINT32_C(3115459200),UINT32_C(3110294461),UINT32_C(3105120247),
+    UINT32_C(3099936575),UINT32_C(3094743459),UINT32_C(3089540917),
+    UINT32_C(3084328963),UINT32_C(3079107614),UINT32_C(3073876885),
+    UINT32_C(3068636792),UINT32_C(3063387352),UINT32_C(3058128581),
+    UINT32_C(3052860494),UINT32_C(3047583107),UINT32_C(3042296437),
+    UINT32_C(3037000499),UINT32_C(3031695311),UINT32_C(3026380887),
+    UINT32_C(3021057244),UINT32_C(3015724399),UINT32_C(3010382367),
+    UINT32_C(3005031165),UINT32_C(2999670809),UINT32_C(2994301316),
+    UINT32_C(2988922702),UINT32_C(2983534983),UINT32_C(2978138175),
+    UINT32_C(2972732295),UINT32_C(2967317360),UINT32_C(2961893387),
+    UINT32_C(2956460390),UINT32_C(2951018388),UINT32_C(2945567396),
+    UINT32_C(2940107432),UINT32_C(2934638512),UINT32_C(2929160652),
+    UINT32_C(2923673869),UINT32_C(2918178181),UINT32_C(2912673603),
+    UINT32_C(2907160153),UINT32_C(2901637847),UINT32_C(2896106702),
+    UINT32_C(2890566735),UINT32_C(2885017963),UINT32_C(2879460402),
+    UINT32_C(2873894071),UINT32_C(2868318984),UINT32_C(2862735161),
+    UINT32_C(2857142617),UINT32_C(2851541370),UINT32_C(2845931436),
+    UINT32_C(2840312834),UINT32_C(2834685579),UINT32_C(2829049689),
+    UINT32_C(2823405181),UINT32_C(2817752073),UINT32_C(2812090382),
+    UINT32_C(2806420124),UINT32_C(2800741318),UINT32_C(2795053980),
+    UINT32_C(2789358128),UINT32_C(2783653778),UINT32_C(2777940950),
+    UINT32_C(2772219659),UINT32_C(2766489924),UINT32_C(2760751761),
+    UINT32_C(2755005189),UINT32_C(2749250225),UINT32_C(2743486885),
+    UINT32_C(2737715189),UINT32_C(2731935153),UINT32_C(2726146795),
+    UINT32_C(2720350133),UINT32_C(2714545185),UINT32_C(2708731967),
+    UINT32_C(2702910498),UINT32_C(2697080795),UINT32_C(2691242877),
+    UINT32_C(2685396761),UINT32_C(2679542464),UINT32_C(2673680005),
+    UINT32_C(2667809402),UINT32_C(2661930672),UINT32_C(2656043833),
+    UINT32_C(2650148904),UINT32_C(2644245901),UINT32_C(2638334844),
+    UINT32_C(2632415750),UINT32_C(2626488638),UINT32_C(2620553524),
+    UINT32_C(2614610428),UINT32_C(2608659367),UINT32_C(2602700360),
+    UINT32_C(2596733425),UINT32_C(2590758580),UINT32_C(2584775842),
+    UINT32_C(2578785231),UINT32_C(2572786765),UINT32_C(2566780461),
+    UINT32_C(2560766339),UINT32_C(2554744416),UINT32_C(2548714710),
+    UINT32_C(2542677241),UINT32_C(2536632027),UINT32_C(2530579085),
+    UINT32_C(2524518435),UINT32_C(2518450095),UINT32_C(2512374083),
+    UINT32_C(2506290418),UINT32_C(2500199119),UINT32_C(2494100203),
+    UINT32_C(2487993690),UINT32_C(2481879598),UINT32_C(2475757946),
+    UINT32_C(2469628752),UINT32_C(2463492035),UINT32_C(2457347814),
+    UINT32_C(2451196108),UINT32_C(2445036935),UINT32_C(2438870314),
+    UINT32_C(2432696263),UINT32_C(2426514803),UINT32_C(2420325950),
+    UINT32_C(2414129725),UINT32_C(2407926146),UINT32_C(2401715232),
+    UINT32_C(2395497002),UINT32_C(2389271475),UINT32_C(2383038670),
+    UINT32_C(2376798605),UINT32_C(2370551301),UINT32_C(2364296775),
+    UINT32_C(2358035048),UINT32_C(2351766137),UINT32_C(2345490062),
+    UINT32_C(2339206843),UINT32_C(2332916498),UINT32_C(2326619047),
+    UINT32_C(2320314508),UINT32_C(2314002901),UINT32_C(2307684246),
+    UINT32_C(2301358560),UINT32_C(2295025865),UINT32_C(2288686178),
+    UINT32_C(2282339520),UINT32_C(2275985909),UINT32_C(2269625365),
+    UINT32_C(2263257908),UINT32_C(2256883556),UINT32_C(2250502329),
+    UINT32_C(2244114247),UINT32_C(2237719329),UINT32_C(2231317595),
+    UINT32_C(2224909063),UINT32_C(2218493754),UINT32_C(2212071687),
+    UINT32_C(2205642882),UINT32_C(2199207358),UINT32_C(2192765135),
+    UINT32_C(2186316232),UINT32_C(2179860670),UINT32_C(2173398467),
+    UINT32_C(2166929644),UINT32_C(2160454220),UINT32_C(2153972214),
+    UINT32_C(2147483647),UINT32_C(2140988539),UINT32_C(2134486909),
+    UINT32_C(2127978777),UINT32_C(2121464163),UINT32_C(2114943086),
+    UINT32_C(2108415567),UINT32_C(2101881625),UINT32_C(2095341281),
+    UINT32_C(2088794553),UINT32_C(2082241463),UINT32_C(2075682030),
+    UINT32_C(2069116274),UINT32_C(2062544216),UINT32_C(2055965874),
+    UINT32_C(2049381270),UINT32_C(2042790423),UINT32_C(2036193353),
+    UINT32_C(2029590080),UINT32_C(2022980625),UINT32_C(2016365008),
+    UINT32_C(2009743249),UINT32_C(2003115367),UINT32_C(1996481384),
+    UINT32_C(1989841319),UINT32_C(1983195192),UINT32_C(1976543025),
+    UINT32_C(1969884836),UINT32_C(1963220647),UINT32_C(1956550478),
+    UINT32_C(1949874349),UINT32_C(1943192280),UINT32_C(1936504291),
+    UINT32_C(1929810404),UINT32_C(1923110638),UINT32_C(1916405014),
+    UINT32_C(1909693553),UINT32_C(1902976274),UINT32_C(1896253198),
+    UINT32_C(1889524346),UINT32_C(1882789738),UINT32_C(1876049395),
+    UINT32_C(1869303338),UINT32_C(1862551585),UINT32_C(1855794160),
+    UINT32_C(1849031081),UINT32_C(1842262370),UINT32_C(1835488046),
+    UINT32_C(1828708132),UINT32_C(1821922647),UINT32_C(1815131612),
+    UINT32_C(1808335048),UINT32_C(1801532976),UINT32_C(1794725416),
+    UINT32_C(1787912388),UINT32_C(1781093915),UINT32_C(1774270015),
+    UINT32_C(1767440712),UINT32_C(1760606024),UINT32_C(1753765973),
+    UINT32_C(1746920580),UINT32_C(1740069865),UINT32_C(1733213850),
+    UINT32_C(1726352555),UINT32_C(1719486001),UINT32_C(1712614210),
+    UINT32_C(1705737201),UINT32_C(1698854997),UINT32_C(1691967618),
+    UINT32_C(1685075084),UINT32_C(1678177418),UINT32_C(1671274639),
+    UINT32_C(1664366770),UINT32_C(1657453831),UINT32_C(1650535842),
+    UINT32_C(1643612826),UINT32_C(1636684803),UINT32_C(1629751795),
+    UINT32_C(1622813822),UINT32_C(1615870906),UINT32_C(1608923067),
+    UINT32_C(1601970327),UINT32_C(1595012708),UINT32_C(1588050230),
+    UINT32_C(1581082914),UINT32_C(1574110782),UINT32_C(1567133855),
+    UINT32_C(1560152155),UINT32_C(1553165701),UINT32_C(1546174517),
+    UINT32_C(1539178623),UINT32_C(1532178040),UINT32_C(1525172790),
+    UINT32_C(1518162893),UINT32_C(1511148373),UINT32_C(1504129249),
+    UINT32_C(1497105543),UINT32_C(1490077277),UINT32_C(1483044472),
+    UINT32_C(1476007149),UINT32_C(1468965330),UINT32_C(1461919036),
+    UINT32_C(1454868289),UINT32_C(1447813110),UINT32_C(1440753521),
+    UINT32_C(1433689543),UINT32_C(1426621198),UINT32_C(1419548507),
+    UINT32_C(1412471492),UINT32_C(1405390174),UINT32_C(1398304576),
+    UINT32_C(1391214717),UINT32_C(1384120621),UINT32_C(1377022309),
+    UINT32_C(1369919802),UINT32_C(1362813122),UINT32_C(1355702290),
+    UINT32_C(1348587329),UINT32_C(1341468260),UINT32_C(1334345104),
+    UINT32_C(1327217884),UINT32_C(1320086621),UINT32_C(1312951337),
+    UINT32_C(1305812053),UINT32_C(1298668792),UINT32_C(1291521574),
+    UINT32_C(1284370422),UINT32_C(1277215358),UINT32_C(1270056404),
+    UINT32_C(1262893580),UINT32_C(1255726910),UINT32_C(1248556414),
+    UINT32_C(1241382115),UINT32_C(1234204034),UINT32_C(1227022194),
+    UINT32_C(1219836617),UINT32_C(1212647323),UINT32_C(1205454335),
+    UINT32_C(1198257676),UINT32_C(1191057366),UINT32_C(1183853428),
+    UINT32_C(1176645884),UINT32_C(1169434756),UINT32_C(1162220065),
+    UINT32_C(1155001834),UINT32_C(1147780085),UINT32_C(1140554839),
+    UINT32_C(1133326119),UINT32_C(1126093947),UINT32_C(1118858345),
+    UINT32_C(1111619334),UINT32_C(1104376937),UINT32_C(1097131176),
+    UINT32_C(1089882073),UINT32_C(1082629649),UINT32_C(1075373928),
+    UINT32_C(1068114932),UINT32_C(1060852681),UINT32_C(1053587199),
+    UINT32_C(1046318508),UINT32_C(1039046629),UINT32_C(1031771586),
+    UINT32_C(1024493399),UINT32_C(1017212091),UINT32_C(1009927685),
+    UINT32_C(1002640203),UINT32_C(995349666),UINT32_C(988056097),
+    UINT32_C(980759519),UINT32_C(973459953),UINT32_C(966157421),
+    UINT32_C(958851947),UINT32_C(951543551),UINT32_C(944232257),
+    UINT32_C(936918087),UINT32_C(929601063),UINT32_C(922281207),
+    UINT32_C(914958542),UINT32_C(907633089),UINT32_C(900304872),
+    UINT32_C(892973912),UINT32_C(885640232),UINT32_C(878303854),
+    UINT32_C(870964801),UINT32_C(863623095),UINT32_C(856278758),
+    UINT32_C(848931812),UINT32_C(841582281),UINT32_C(834230186),
+    UINT32_C(826875549),UINT32_C(819518394),UINT32_C(812158743),
+    UINT32_C(804796618),UINT32_C(797432041),UINT32_C(790065034),
+    UINT32_C(782695622),UINT32_C(775323825),UINT32_C(767949666),
+    UINT32_C(760573168),UINT32_C(753194353),UINT32_C(745813244),
+    UINT32_C(738429862),UINT32_C(731044232),UINT32_C(723656374),
+    UINT32_C(716266313),UINT32_C(708874069),UINT32_C(701479666),
+    UINT32_C(694083126),UINT32_C(686684472),UINT32_C(679283726),
+    UINT32_C(671880911),UINT32_C(664476049),UINT32_C(657069163),
+    UINT32_C(649660276),UINT32_C(642249409),UINT32_C(634836586),
+    UINT32_C(627421830),UINT32_C(620005162),UINT32_C(612586605),
+    UINT32_C(605166183),UINT32_C(597743917),UINT32_C(590319830),
+    UINT32_C(582893945),UINT32_C(575466284),UINT32_C(568036870),
+    UINT32_C(560605726),UINT32_C(553172875),UINT32_C(545738338),
+    UINT32_C(538302139),UINT32_C(530864300),UINT32_C(523424844),
+    UINT32_C(515983793),UINT32_C(508541171),UINT32_C(501097000),
+    UINT32_C(493651302),UINT32_C(486204100),UINT32_C(478755418),
+    UINT32_C(471305277),UINT32_C(463853700),UINT32_C(456400711),
+    UINT32_C(448946331),UINT32_C(441490583),UINT32_C(434033491),
+    UINT32_C(426575076),UINT32_C(419115363),UINT32_C(411654372),
+    UINT32_C(404192127),UINT32_C(396728652),UINT32_C(389263967),
+    UINT32_C(381798097),UINT32_C(374331064),UINT32_C(366862891),
+    UINT32_C(359393600),UINT32_C(351923214),UINT32_C(344451757),
+    UINT32_C(336979250),UINT32_C(329505716),UINT32_C(322031179),
+    UINT32_C(314555661),UINT32_C(307079185),UINT32_C(299601773),
+    UINT32_C(292123449),UINT32_C(284644234),UINT32_C(277164153),
+    UINT32_C(269683227),UINT32_C(262201480),UINT32_C(254718934),
+    UINT32_C(247235613),UINT32_C(239751538),UINT32_C(232266733),
+    UINT32_C(224781220),UINT32_C(217295023),UINT32_C(209808163),
+    UINT32_C(202320665),UINT32_C(194832550),UINT32_C(187343842),
+    UINT32_C(179854563),UINT32_C(172364736),UINT32_C(164874384),
+    UINT32_C(157383530),UINT32_C(149892196),UINT32_C(142400406),
+    UINT32_C(134908182),UINT32_C(127415548),UINT32_C(119922525),
+    UINT32_C(112429136),UINT32_C(104935406),UINT32_C(97441355),
+    UINT32_C(89947008),UINT32_C(82452387),UINT32_C(74957514),
+    UINT32_C(67462414),UINT32_C(59967107),UINT32_C(52471619),
+    UINT32_C(44975970),UINT32_C(37480184),UINT32_C(29984284),
+    UINT32_C(22488293),UINT32_C(14992233),UINT32_C(7496128),
+    0 };  // cosr values for 10th degrees from 0 to 90
+  lat/= 1000000;
+    // transform unit 100 nano degree into unit 10th degree
+  if(lat<0) lat= -lat;  // make it positive
+  if(lat>900) lat= 900; // set maximum of 90 degree
+  return ((uint64_t)cosrtab[lat]*(int64_t)londiff)/INT64_C(0x100000000);
+  }  // lonadapt()
+// the table in the previous procedure has been generated by this
+// program:
+#if 0  // file cosr.c, run it with: gcc cosr.c -lm -o cosr && ./cosr
+#include <stdio.h>
+#include <math.h>
+#include <inttypes.h>
+int main() {
+  int i;
+  printf("  static const uint32_t cosrtab[901]= "
+    "{\n    UINT32_C(4294967295),");
+  for(i= 1;i<900;i++) {
+    if(i%3==0) printf("\n    ");
+    printf("UINT32_C(%"PRIu32"),",(uint32_t)(
+      cos(i/1800.0*3.14159265359) * INT64_C(0x100000000) ));
+    }
+  printf("\n    0");
+  printf(" };  // cosr values for 10th degrees from 0 to 90\n");
+  return 0; }
+#endif
+
+static int32_t geodistance(int32_t x1,int32_t y1,
+    int32_t x2,int32_t y2) {
+  // approximates the geodistance between two points;
+  // x1,y1: geocoordinates of first point;
+  // x2,y2: geocoordinates of second point;
+  // return: distance as angle;
+  // all units in 100 nanodegrees;
+  // how this is done:
+  // distances in West-East direction and in South-North direction
+  // are compared; the longer shorter distance is divided by 3 and
+  // added to the value of the longer distance;
+  // => all points on the edges of an octagon around point 1
+  //    are interpreted as equidistant;
+  // this approximation is close enough for this application;
+  int32_t xdist,ydist;
+
+  xdist= x2-x1; if(xdist<0) xdist= -xdist;
+  ydist= y2-y1; if(ydist<0) ydist= -ydist;
+  xdist= lonadapt(xdist,y1);
+  if(xdist<ydist)
+    return xdist/3+ydist;
+  return ydist/3+xdist;
+  }  // geodistance
 
 
 
@@ -1435,9 +1876,8 @@ return false;
       if(s[0]!=' ' && s[0]!='\t') {  // not inside a section
         if(x0!=nil && x1!=nil && (x1!=x0 || y1!=y0)) {
             // last polygon was not closed
-          if(x1==x0) {  // the edge would be vertical
-            // we have to insert an additional edge
-            x0+= 3;
+          if(x1!=x0) {  // missing edge not in north-south direction
+            // close the polygon
             if(x0>x1)
               { bep->x1= x1; bep->y1= y1; bep->x2= x0; bep->y2= y0; }
             else
@@ -1445,24 +1885,10 @@ return false;
             bep->chain= NULL;
             if(loglevel>=1)
               fprintf(stderr,
-                "+ %i %"PRIi32",%"PRIi32",%"PRIi32",%"PRIi32"\n",
-                (int)(bep-border__edge),
-                bep->x1,bep->y1,bep->x2,bep->y2);
+                "c %i %"PRIi32",%"PRIi32",%"PRIi32",%"PRIi32"\n",
+                (int)(bep-border__edge),bep->x1,bep->y1,bep->x2,bep->y2);
             bep++;
-            x1= x0; y1= y0;
-            x0-= 3;
-            }  // the edge would be vertical
-          // close the polygon
-          if(x0>x1)
-            { bep->x1= x1; bep->y1= y1; bep->x2= x0; bep->y2= y0; }
-          else
-            { bep->x1= x0; bep->y1= y0; bep->x2= x1; bep->y2= y1; }
-          bep->chain= NULL;
-          if(loglevel>=1)
-            fprintf(stderr,
-              "c %i %"PRIi32",%"PRIi32",%"PRIi32",%"PRIi32"\n",
-              (int)(bep-border__edge),bep->x1,bep->y1,bep->x2,bep->y2);
-          bep++;
+            }  // missing edge not in north-south direction
           }  // end   last polygon was not closed
         x0= x1= nil;
         }  // end   not inside a section
@@ -1478,20 +1904,22 @@ return false;
           }
         if(x!=nil) {  // data plausible
           if(x1!=nil) {  // there is a preceding coordinate
-            if(x==x1) x+= 2;  // do not accept exact north-south
-              // lines, because then we may not be able to determine
-              // if a point lies inside or outside the polygon;
-            if(x>x1)
-              { bep->x1= x1; bep->y1= y1; bep->x2= x; bep->y2= y; }
-            else
-              { bep->x1= x; bep->y1= y; bep->x2= x1; bep->y2= y1; }
-            bep->chain= NULL;
-            if(loglevel>=1)
-              fprintf(stderr,
-                "- %i %"PRIi32",%"PRIi32",%"PRIi32",%"PRIi32"\n",
-                (int)(bep-border__edge),
-                bep->x1,bep->y1,bep->x2,bep->y2);
-            bep++;
+            if(x1!=x) {  // new edge not in north-south direction;
+                // we do not accept exact north-south lines,
+                // because then we may not be able to determine
+                // if a point lies inside or outside the polygon;
+              if(x>x1)
+                { bep->x1= x1; bep->y1= y1; bep->x2= x; bep->y2= y; }
+              else
+                { bep->x1= x; bep->y1= y; bep->x2= x1; bep->y2= y1; }
+              bep->chain= NULL;
+              if(loglevel>=1)
+                fprintf(stderr,
+                  "- %i %"PRIi32",%"PRIi32",%"PRIi32",%"PRIi32"\n",
+                  (int)(bep-border__edge),
+                  bep->x1,bep->y1,bep->x2,bep->y2);
+              bep++;
+              }  // new edge not in north-south direction
             }  // end   there is a preceding coordinate
           x1= x; y1= y;
           if(x0==nil)
@@ -1632,28 +2060,25 @@ return false;
   /* second, consider border polygon (if any) */ {
     border__edge_t* bep;  // pointer in border__edge[]
     border__chain_t* bcp;  // pointer in border__chain[]
-    int cross;  // number of the crossings a line from the point
-      // to the north pole would have ageinst the border lines
-      // in border__coord[][];
+    int cross;  // number of polygon edges a ray would cross
+      // which started at the given point;
 
     if(border__edge==NULL)
 return true;
     cross= 0;
 
-    /* binary-search the edge with the closest x1 */ {
+    /* binary-search the edge with the closest x1 | x1<=x */ {
       int i,i1,i2;  // iteration indexes
 
       i1= 0; i2= border__edge_n;
       while(i2>i1+1) {
         i= (i1+i2)/2;
         bep= border__edge+i;
-//fprintf(stderr,"s %i %i %i   %li\n",i1,i,i2,bep->x1); ///
         if(bep->x1 > x) i2= i;
         else i1= i;
-//fprintf(stderr,"  %i %i %i\n",i1,i,i2); ///
         }
       bep= border__edge+i1;
-      }  // end   binary-search the edge with the closest x1
+      }  // binary-search the edge with the closest x1 | x1<=x
 
     bcp= NULL;
       // (default, because we want to examine the own edge first)
@@ -1919,12 +2344,12 @@ static inline bool read_input() {
   // having available at least read_PREFETCH bytes at address
   // read_bufp - with one exception: if there are not enough bytes
   // left to read from standard input, every byte after the end of
-  // the reminding part of the file in the buffer will be set to
+  // the remaining part of the file in the buffer will be set to
   // 0x00 - up to read_bufp+read_PREFETCH;
   int l,r;
 
   if(read_bufp+read_PREFETCH>=read_bufe) {  // read buffer is too low
-    if(!read_infop->eof) {  // still bytes in the file
+    if(!read_infop->eof) {  // still bytes to read
       if(read_bufe>read_bufp) {  // bytes remaining in buffer
         memmove(read__buf,read_bufp,read_bufe-read_bufp);
           // move remaining bytes to start of buffer
@@ -1949,10 +2374,10 @@ static inline bool read_input() {
           read_infop->eof= true;
             // memorize that there we are at end of file
           l= (read__buf+read__bufM)-read_bufe;
-            // reminding space in buffer
+            // remaining space in buffer
           if(l>read_PREFETCH) l= read_PREFETCH;
           memset(read_bufe,0,l);  // 2011-12-24
-            // set reminding space up to prefetch bytes in buffer to 0
+            // set remaining space up to prefetch bytes in buffer to 0
       break;
           }
         read_infop->counter+= r;
@@ -2009,11 +2434,11 @@ return 0;
 static inline bool read_setjump() {
   // store the current position in the file as a destination
   // for a jump which will follow later;
-  // if global_complexways is false, the call will be ignored;
+  // if global_complex is false, the call will be ignored;
   // the position is not stored anew if it has been locked
   // with read_infop->lockpos;
   // return: jump position has been stored;
-  if(!global_complexways)
+  if(!global_complex)
 return false;
   if(read__jumplock)
 return false;
@@ -2476,6 +2901,25 @@ static inline void write_uint32(uint32_t v) {
   write_str(s);
   }  // end write_uint32()
 
+static inline void write_createsint32(int32_t v,char* sp) {
+  // create a signed 32 bit integer number;
+  // return:
+  // sp[20]: value v as decimal integer string;
+  static char *s1,*s2,c;
+
+  s1= sp;
+  if(v<0)
+    { *s1++= '-'; v= -v; }
+  else if(v==0)
+    *s1++= '0';
+  s2= s1;
+  while(v>0)
+    { *s2++= (v%10)+'0'; v/= 10; }
+  *s2--= 0;
+  while(s2>s1)
+    { c= *s1; *s1= *s2; *s2= c; s1++; s2--; }
+  }  // end write_sint32()
+
 #if 0  // currently unused
 static inline void write_sint32(int32_t v) {
   // write a signed 32 bit integer number to standard output;
@@ -2553,8 +2997,8 @@ static inline char* write_createsfix7o(int32_t v,char* s) {
   // convert a signed 7 decimals fixpoint value into a string;
   // keep trailing zeros;
   // v: fixpoint value
-  // return: pointer do string terminator;
-  // s[12]: destination string;
+  // return: pointer to string terminator;
+  // s[13]: destination string;
   char* s1,*s2,*sterm,c;
   int i;
 
@@ -5469,13 +5913,717 @@ static inline void pw_relation_close() {
 
 
 //------------------------------------------------------------
+// Module modi_   OSM tag modification module
+//------------------------------------------------------------
+
+// this module provides tag modification functionality;
+// as usual, all identifiers of a module have the same prefix,
+// in this case 'modi'; an underline will follow in case of a
+// global accessible object, two underlines in case of objects
+// which are not meant to be accessed from outside this module;
+// the sections of private and public definitions are separated
+// by a horizontal line: ----
+
+static inline void modi__stresccpy(char *dest, const char *src,
+    size_t len) {
+  // similar as strmpy(), but remove every initial '\\' character;
+  // len: length of the source string - without terminating zero;
+  while(len>0) {
+    if(*src=='\\') { src++; len--; }
+    if(!(len>0) || *src==0)
+  break;
+    len--;
+    *dest++= *src++;
+    }
+  *dest= 0;
+  }  // end   modi__stresccpy()
+
+static inline bool modi__cmp(const char* s1,const char* s2) {
+  // this procedure compares two character strings;
+  // s1[]: first string;
+  // s2[0]: operator which shall be used for comparison;
+  //         0: '=', and there are wildcards coded in s2[1]:
+  //                 s2[1]==1: wildcard at start;
+  //                 s2[1]==2: wildcard at end;
+  //                 s2[1]==3: wildcard at both, start and end;
+  //         1: '!=', and there are wildcards coded in s2[1];
+  //         2: '='
+  //         4: '<'
+  //         5: '>='
+  //         6: '>'
+  //         7: '<='
+  //         8: unused
+  //         9: unused
+  //        10: '=', numeric
+  //        11: '!=', numeric
+  //        12: '<', numeric
+  //        13: '>=', numeric
+  //        14: '>', numeric
+  //        15: '<=', numeric
+  // s2+1: string to compare with the first string;
+  //       this string will start at s2+2 if wildcards are supplied;
+  // return: condition is met;
+  int op,wc;  // operator, wildcard flags
+  int diff;  // (for numeric comparison)
+  unsigned char s1v,s2v;  // (for numeric comparison)
+
+  op= *s2++;
+  if(op==2) { // '='
+    // first we care about the 'equal' operator
+    // because it's the most frequently used option
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *s1==0 && *s2==0;
+    }
+  switch(op) {  // depending on comparison operator
+  case 0:  // '=', and there are wildcards
+    wc= *s2++;
+    if(wc==2) {  // wildcard at end
+      while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+      return *s2==0;
+      }  // wildcard at end
+    if(wc==1) {  // wildcard at start
+      const char* s11,*s22;
+
+      while(*s1!=0) {  // for all start positions in s1[]
+        s11= s1; s22= s2;
+        while(*s11==*s22 && *s11!=0) { s11++; s22++; }
+        if(*s11==0 && *s22==0)
+          return true;
+        s1++;
+        }  // for all start positions in s1[]
+      return false;
+      }  // wildcard at start
+    /* wildcards at start and end */ {
+      const char* s11,*s22;
+
+      while(*s1!=0) {  // for all start positions in s1[]
+        s11= s1; s22= s2;
+        while(*s11==*s22 && *s11!=0) { s11++; s22++; }
+        if(*s22==0)
+          return true;
+        s1++;
+        }  // for all start positions in s1[]
+      return false;
+      }  // wildcards at start and end
+  case 1:  // '!=', and there are wildcards
+    wc= *s2++;
+    if(wc==2) {  // wildcard at end
+      while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+      return *s2!=0;
+      }  // wildcard at end
+    if(wc==1) {  // wildcard at start
+      const char* s11,*s22;
+
+      while(*s1!=0) {  // for all start positions in s1[]
+        s11= s1; s22= s2;
+        while(*s11==*s22 && *s11!=0) { s11++; s22++; }
+        if(*s11==0 && *s22==0)
+          return false;
+        s1++;
+        }  // for all start positions in s1[]
+      return true;
+      }  // wildcard at start
+    /* wildcards at start and end */ {
+      const char* s11,*s22;
+
+      while(*s1!=0) {  // for all start positions in s1[]
+        s11= s1; s22= s2;
+        while(*s11==*s22 && *s11!=0) { s11++; s22++; }
+        if(*s22==0)
+          return false;
+        s1++;
+        }  // for all start positions in s1[]
+      return true;
+      }  // wildcards at start and end
+  //case 2:  // '='  (we already cared about this)
+  case 3:  // '!='
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *s1!=0 || *s2!=0;
+  case 4:  // '<'
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *(unsigned char*)s1 < *(unsigned char*)s2;
+  case 5:  // '>='
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *(unsigned char*)s1 >= *(unsigned char*)s2;
+  case 6:  // '>'
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *(unsigned char*)s1 > *(unsigned char*)s2;
+  case 7:  // '<='
+    while(*s1==*s2 && *s1!=0) { s1++; s2++; }
+    return *(unsigned char*)s1 <= *(unsigned char*)s2;
+  case 10:  // '=', numeric
+    while(*s1=='0') s1++;
+    while(*s2=='0') s2++;
+    while(*s1==*s2 && isdigi(*(unsigned char*)s1))
+      { s1++; s2++; }
+    if(*s1=='.') {
+      if(*s2=='.') {
+        do { s1++; s2++; }
+          while(*s1==*s2 && isdigi(*(unsigned char*)s1));
+        if(!isdigi(*(unsigned char*)s1)) {
+          while(*s2=='0') s2++;
+          return !isdigi(*(unsigned char*)s2);
+          }
+        if(!isdigi(*(unsigned char*)s2)) {
+          while(*s1=='0') s1++;
+          return !isdigi(*(unsigned char*)s1);
+          }
+        return !isdigi(*(unsigned char*)s1) &&
+          !isdigi(*(unsigned char*)s2);
+        }
+      do s1++;
+        while(*s1=='0');
+      return !isdigi(*(unsigned char*)s1);
+      }
+    if(*s2=='.') {
+      do s2++;
+        while(*s2=='0');
+      return !isdigi(*(unsigned char*)s2);
+      }
+    return !isdigi(*(unsigned char*)s1) && !isdigi(*(unsigned char*)s2);
+  case 11:  // '!=', numeric
+    while(*s1=='0') s1++;
+    while(*s2=='0') s2++;
+    while(*s1==*s2 && isdigi(*(unsigned char*)s1))
+      { s1++; s2++; }
+    if(*s1=='.') {
+      if(*s2=='.') {
+        do { s1++; s2++; }
+          while(*s1==*s2 && isdigi(*(unsigned char*)s1));
+        if(!isdigi(*(unsigned char*)s1)) {
+          while(*s2=='0') s2++;
+          return isdigi(*(unsigned char*)s2);
+          }
+        if(!isdigi(*(unsigned char*)s2)) {
+          while(*s1=='0') s1++;
+          return isdigi(*(unsigned char*)s1);
+          }
+        return isdigi(*(unsigned char*)s1) ||
+          isdigi(*(unsigned char*)s2);
+        }
+      do s1++;
+        while(*s1=='0');
+      return isdigi(*(unsigned char*)s1);
+      }
+    if(*s2=='.') {
+      do s2++;
+        while(*s2=='0');
+      return isdigi(*(unsigned char*)s2);
+      }
+    return isdigi(*(unsigned char*)s1) || isdigi(*(unsigned char*)s2);
+  case 12:  /* '<', numeric */
+    #define Ds1 s1
+    #define Ds2 s2
+    s1v= *(unsigned char*)Ds1; s2v= *(unsigned char*)Ds2;
+    if(s1v=='-') {
+      if(s2v=='-') {
+        Ds1++; s2v= *(unsigned char*)Ds1;
+        Ds2++; s1v= *(unsigned char*)Ds2;
+        goto op_14;
+        }
+      return true;
+      }
+    else if(s2v=='-')
+      return false;
+    op_12:
+    while(s1v=='0') { Ds1++; s1v= *(unsigned char*)Ds1; }
+    while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+    while(s1v==s2v && isdigi(s1v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    diff= digival(s1v)-digival(s2v);
+    while(isdigi(s1v) && isdigi(s2v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    if(s1v=='.') {
+      if(s2v=='.') {
+        if(diff!=0)
+          return diff<0;
+        do {
+          Ds1++; s1v= *(unsigned char*)Ds1;
+          Ds2++; s2v= *(unsigned char*)Ds2;
+          } while(s1v==s2v && isdigi(s1v));
+        while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+        return digival(s1v) < digival(s2v);
+        }
+      return isdigi(s2v) || diff<0;
+      }
+    if(s2v=='.') {
+      if(isdigi(s1v))
+        return false;
+      if(diff!=0)
+        return diff<0;
+      do { Ds2++; s2v= *(unsigned char*)Ds2; } while(s2v=='0');
+      return isdigi(s2v);
+      }
+    return isdigi(s2v) || (!isdigi(s1v) && diff<0);
+    #undef Ds1
+    #undef Ds2
+  case 13:  /* '>=', numeric */
+    #define Ds1 s1
+    #define Ds2 s2
+    s1v= *(unsigned char*)Ds1; s2v= *(unsigned char*)Ds2;
+    if(s1v=='-') {
+      if(s2v=='-') {
+        Ds1++; s2v= *(unsigned char*)Ds1;
+        Ds2++; s1v= *(unsigned char*)Ds2;
+        goto op_15;
+        }
+      return false;
+      }
+    else if(s2v=='-')
+      return true;
+    op_13:
+    while(s1v=='0') { Ds1++; s1v= *(unsigned char*)Ds1; }
+    while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+    while(s1v==s2v && isdigi(s1v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    diff= digival(s1v)-digival(s2v);
+    while(isdigi(s1v) && isdigi(s2v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    if(s1v=='.') {
+      if(s2v=='.') {
+        if(diff!=0)
+          return diff>=0;
+        do {
+          Ds1++; s1v= *(unsigned char*)Ds1;
+          Ds2++; s2v= *(unsigned char*)Ds2;
+          } while(s1v==s2v && isdigi(s1v));
+        while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+        return digival(s1v) >= digival(s2v);
+        }
+      return !isdigi(s2v) && diff>=0;
+      }
+    if(s2v=='.') {
+      if(isdigi(s1v))
+        return true;
+      if(diff!=0)
+        return diff>=0;
+      do { Ds2++; s2v= *(unsigned char*)Ds2; } while(s2v=='0');
+      return !isdigi(s2v);
+      }
+    return !isdigi(s2v) && (isdigi(s1v) || diff>=0);
+    #undef Ds1
+    #undef Ds2
+  case 14:  /* '>', numeric */
+    #define Ds1 s2
+    #define Ds2 s1
+    s1v= *(unsigned char*)Ds1; s2v= *(unsigned char*)Ds2;
+    if(s1v=='-') {
+      if(s2v=='-') {
+        Ds1++; s2v= *(unsigned char*)Ds1;
+        Ds2++; s1v= *(unsigned char*)Ds2;
+        goto op_12;
+        }
+      return true;
+      }
+    else if(s2v=='-')
+      return false;
+    op_14:
+    while(s1v=='0') { Ds1++; s1v= *(unsigned char*)Ds1; }
+    while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+    while(s1v==s2v && isdigi(s1v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    diff= digival(s1v)-digival(s2v);
+    while(isdigi(s1v) && isdigi(s2v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    if(s1v=='.') {
+      if(s2v=='.') {
+        if(diff!=0)
+          return diff<0;
+        do {
+          Ds1++; s1v= *(unsigned char*)Ds1;
+          Ds2++; s2v= *(unsigned char*)Ds2;
+          } while(s1v==s2v && isdigi(s1v));
+        while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+        return digival(s1v) < digival(s2v);
+        }
+      return isdigi(s2v) || diff<0;
+      }
+    if(s2v=='.') {
+      if(isdigi(s1v))
+        return false;
+      if(diff!=0)
+        return diff<0;
+      do { Ds2++; s2v= *(unsigned char*)Ds2; } while(s2v=='0');
+      return isdigi(s2v);
+      }
+    return isdigi(s2v) || (!isdigi(s1v) && diff<0);
+    #undef Ds1
+    #undef Ds2
+  case 15:  /* '<=', numeric */
+    #define Ds1 s2
+    #define Ds2 s1
+    s1v= *(unsigned char*)Ds1; s2v= *(unsigned char*)Ds2;
+    if(s1v=='-') {
+      if(s2v=='-') {
+        Ds1++; s2v= *(unsigned char*)Ds1;
+        Ds2++; s1v= *(unsigned char*)Ds2;
+        goto op_13;
+        }
+      return false;
+      }
+    else if(s2v=='-')
+      return true;
+    op_15:
+    while(s1v=='0') { Ds1++; s1v= *(unsigned char*)Ds1; }
+    while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+    while(s1v==s2v && isdigi(s1v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    diff= digival(s1v)-digival(s2v);
+    while(isdigi(s1v) && isdigi(s2v)) {
+      Ds1++; s1v= *(unsigned char*)Ds1;
+      Ds2++; s2v= *(unsigned char*)Ds2;
+      }
+    if(s1v=='.') {
+      if(s2v=='.') {
+        if(diff!=0)
+          return diff>=0;
+        do {
+          Ds1++; s1v= *(unsigned char*)Ds1;
+          Ds2++; s2v= *(unsigned char*)Ds2;
+          } while(s1v==s2v && isdigi(s1v));
+        while(s2v=='0') { Ds2++; s2v= *(unsigned char*)Ds2; }
+        return digival(s1v) >= digival(s2v);
+        }
+      return !isdigi(s2v) && diff>=0;
+      }
+    if(s2v=='.') {
+      if(isdigi(s1v))
+        return true;
+      if(diff!=0)
+        return diff>=0;
+      do { Ds2++; s2v= *(unsigned char*)Ds2; } while(s2v=='0');
+      return !isdigi(s2v);
+      }
+    return !isdigi(s2v) && (isdigi(s1v) || diff>=0);
+    #undef Ds1
+    #undef Ds2
+  // (no default)
+    }  // depending on comparison operator
+  return false;  // (we never get here)
+  }  // end   modi__cmp()
+
+#define modi__pairM 1000  // maximum number of key-val-pairs
+#define modi__pairkM 100  // maximum length of key or val;
+#define modi__pairtM 3  // maximum number of modification types;
+  // these modification types are defined as follows:
+  //  0: modify node     tag;
+  //  1: modify way      tag;
+  //  2: modify relation tag;
+struct modi__pair_struct {
+  // key/val pair for the include filter
+  char k[modi__pairkM+8];  // key to compare;
+    // [0]==0 && [1]==0: same key as previous key in list;
+  char v[modi__pairkM+8];  // value to the key in .k[];
+    // the first byte represents a comparison operator,
+    // see parameter s2[]in modi__cmp() for details;
+    // [0]==0 && [1]==0: any value will be accepted;
+  char nk[modi__pairkM+2];  // new key
+  char nv[modi__pairkM+2];  // new value
+  bool add;  // new key/val pair shall be added instead of replacing
+    // the old key/val pair
+  } __attribute__((__packed__));
+typedef struct modi__pair_struct modi__pair_t;
+static modi__pair_t modi__pair[modi__pairtM][modi__pairM+2]=
+  {{{{0},{0},{0},{0}}}};
+static modi__pair_t* modi__paire[modi__pairtM]=
+  { &modi__pair[0][0],&modi__pair[1][0],&modi__pair[2][0] };
+static modi__pair_t* modi__pairee[modi__pairtM]=
+  { &modi__pair[0][modi__pairM],&modi__pair[1][modi__pairM],
+    &modi__pair[2][modi__pairM] };
+
+//------------------------------------------------------------
+
+static inline void modi_cpy(char *dest, const char *src,
+    size_t len,int op) {
+  // similar as strmpy(), but remove every initial '\\' character;
+  // len: length of the source string - without terminating zero;
+  // op: comparison operator;
+  //         2: '='
+  //         4: '<'
+  //         5: '>='
+  //         6: '>'
+  //         7: '<='
+  // return: dest[0]: comparison operator; additional possible values:
+  //         0: '=', and there are wildcards coded in dest[1]:
+  //                 dest[1]==1: wildcard at start;
+  //                 dest[1]==2: wildcard at end;
+  //                 dest[1]==3: wildcard at both, start and end;
+  //         1: '!=', and there are wildcards coded in dest[1];
+  //        10: '=', numeric
+  //        11: '!=', numeric
+  //        12: '<', numeric
+  //        13: '>=', numeric
+  //        14: '>', numeric
+  //        15: '<=', numeric
+  int wc;  // wildcard indicator, see modi__cmp()
+
+  if(op<0) {  // unknown operator
+    WARNv("unknown comparison at: %.80s",src)
+    op= 2;  // assume '='
+    }
+  if(len>(modi__pairkM)) {
+    len= modi__pairkM;  // delimit value length
+    WARNv("modification argument too long: %.*s",modi__pairkM,src)
+    }
+  wc= 0;  // (default)
+  if(len>=2 && src[0]=='*') {  // wildcard at start
+    wc|= 1;
+    src++; len--;
+    }
+  if((len>=2 && src[len-1]=='*' && src[len-2]!='\\') ||
+      (len==1 && src[len-1]=='*')) {
+      // wildcard at end
+    wc|= 2;
+    len--;
+    }
+  if(wc==0) {  // no wildcard(s)
+    const char* v;
+
+    v= src;
+    if(*v=='-') v++;  // jump over sign
+    if(isdig(*v))  // numeric value
+      op+= 8;
+    dest[0]= op;
+    modi__stresccpy(dest+1,src,len);  // store this value
+    }  // no wildcard(s)
+  else {  // wildcard(s)
+    dest[0]= op&1;
+    dest[1]= wc;
+    modi__stresccpy(dest+2,src,len);  // store this value
+    }  // wildcard(s)
+  }  // end   modi_cpy()
+
+static bool modi_active= false;
+  // there is at least one modify criteria active;
+  // may be read by everyone but written only by this module;
+static bool modi_activetype[modi__pairtM]= {false,false,false};
+  // the related modify list has at least one element;
+  // may be read by everyone but written only by this module;
+
+static void modi_ini() {
+  // initialize this mudule;
+  int i;
+
+  modi_active= false;
+  for(i= 0; i<modi__pairtM; i++) {
+    modi__paire[i]= &modi__pair[i][0];
+    modi__pairee[i]= &modi__pair[i][modi__pairM];
+    modi_activetype[i]= false;
+    }
+  }  // modi_ini()
+
+static void modi_parse(int ftype,const char* arg) {
+  // interprets a command line argument and stores modification
+  // information;
+  // ftype: object type; see explanation at modi__pairtM;
+  // arg[]: modification information; e.g.:
+  //        "amenity=fire_hydrant to emergency=fire_hydrant"
+  modi__pair_t*fe,*fee;
+  const char* pk,*pv,*pe;  // pointers in parameter for key/val pairs;
+    // pk: key; pv: val; pe: end of val;
+  int len;  // string length
+  int op;  // operator, see modi__cmp()
+
+  fe= modi__paire[ftype];
+  fee= modi__pairee[ftype];
+  if(loglevel>0)
+    PINFOv("Modify: %s tags:",ONAME(ftype%3))
+  pk= arg;
+  while(*pk==' ') pk++;  // jump over spaces
+
+  while(pk!=NULL && fe<fee) {  // for every key/val pair
+    while(*pk==' ') pk++;  // jump over (additional) spaces
+    if(*pk==0)
+  break;
+    pe= pk;
+    while((*pe!=' ' || pe[-1]=='\\') && *pe!=0) pe++;
+      // get end of this pair
+    len= pe-pk;  // length of this argument
+    pv= pk;
+    while(((*pv!='=' && *pv!='<' && *pv!='>' &&
+        (*pv!='!' || pv[1]!='=')) ||
+        (pv>pk && pv[-1]=='\\')) && pv<pe) pv++;
+      // find operator =, <, >, !=
+    if(pv>=pe-1) pv= pe;  // there was no operator in this pair
+    len= pv-pk;  // length of this key
+    if(len>(modi__pairkM)) {
+      len= modi__pairkM;  // delimit key length
+      WARNv("modification key too long: %.*s",modi__pairkM,pk)
+      }
+    op= -1;  // 'unknown operator' (default)
+    if(pv>=pe) {  // there is a key but no value
+      if(len>0 && pk[len-1]=='=') len--;
+      modi_cpy(fe->k,pk,len,2);  // store this key, op='='
+      memset(fe->v,0,3);  // store empty value
+      }
+    else {  // key and value
+      if(len==0)  // no key given
+        memset(fe->k,0,3);  // store empty key,
+      else
+        modi_cpy(fe->k,pk,len,2);  // store this key, op='='
+      if(*pv=='=') op= 2;
+      else if(*pv=='!' && pv[1]=='=') op= 3;
+      else if(*pv=='<' && pv[1]!='=') op= 4;
+      else if(*pv=='>' && pv[1]=='=') op= 5;
+      else if(*pv=='>' && pv[1]!='=') op= 6;
+      else if(*pv=='<' && pv[1]=='=') op= 7;
+      if(op<0) {  // unknown operator
+        WARNv("unknown comparison at: %.80s",pv)
+        op= 2;  // assume '='
+        }
+      pv++;  // jump over operator
+      if(pv<pe && *pv=='=') pv++;
+        // jump over second character of a two-character operator
+      len= pe-pv;  // length of this value
+      modi_cpy(fe->v,pv,len,op);  // store this value
+      }  // key and value
+    // jump over ' to ' phrase
+    while(*pe==' ') pe++;  // jump over spaces
+    if((fe->add= strzcmp(pe,"add ")==0)) pe+= 4;
+    else if(strzcmp(pe,"to ")==0) pe+= 3;
+    // get destination key/val
+    pk= pe;  // jump to next key/val pair in parameter list
+    while(*pk==' ') pk++;  // jump over (additional) spaces
+    pe= pk;
+    while((*pe!=' ' || pe[-1]=='\\') && *pe!=0) pe++;
+      // get end of this destination pair
+    len= pe-pk;  // length of this argument
+    pv= pk;
+    while((*pv!='=' || (pv>pk && pv[-1]=='\\')) && pv<pe) pv++;
+      // find operator '='
+    if(pv>=pe-1) pv= pe;  // there was no operator in this pair
+    len= pv-pk;  // length of this key
+    if(len>(modi__pairkM)) {
+      len= modi__pairkM;  // delimit key length
+      WARNv("modification key too long: %.*s",modi__pairkM,pk)
+      }
+    if(pv>=pe) {  // there is a destination key but no value
+      if(len>0 && pk[len-1]=='=') len--;
+      modi__stresccpy(fe->nk,pk,len);  // store this key
+      fe->nv[0]= 0;  // store empty value
+      }
+    else {  // destination key and value
+      if(len==0)  // no key given
+        modi__stresccpy(fe->nk,fe->k[0]<=1? fe->k+2: fe->k+1,
+          modi__pairkM);
+          // store source key as destination key
+      else
+        modi__stresccpy(fe->nk,pk,len);  // store this key
+      pv++;  // jump over equation operator
+      if(pv<pe && *pv=='=') pv++;
+        // jump over second character of a two-character operator
+      len= pe-pv;  // length of this value
+      if(len==0)  // no value given
+        modi__stresccpy(fe->nv,fe->v[0]<=1? fe->v+2: fe->v+1,
+          modi__pairkM);
+          // store source value as destination value
+      else
+        modi__stresccpy(fe->nv,pv,len);  // store this value
+      }  // destination key and value
+    if(loglevel>0) {
+      static const char* ops[]= { "?",
+        "=","!=","=","!=","<",">=",">","<=",
+        "?","?","=(numeric)","!=(numeric)",
+        "<(numeric)",">=(numeric)",">(numeric)","<=(numeric)" };
+      PINFOv("Modify:     %s\"%.80s\"%s %s %s\"%.80s\"%s",
+        fe->k[0]<=1 && (fe->k[1] & 1)? "*": "",
+        *(int16_t*)(fe->k)==0? "(last key)":
+          fe->k[0]>=2? fe->k+1: fe->k+2,
+        fe->k[0]<=1 && (fe->k[1] & 2)? "*": "",
+        ops[fe->v[0]+1],
+        fe->v[0]<=1 && (fe->v[1] & 1)? "*": "",
+        *(int16_t*)(fe->v)==0? "(anything)":
+          fe->v[0]>=2? fe->v+1: fe->v+2,
+        fe->v[0]<=1 && (fe->v[1] & 2)? "*": "");
+      }
+    fe++;  // next pair in key/val table
+    pk= pe;  // jump to next key/val pair in parameter list
+    }  // end   for every key/val pair
+  if(fe>=fee)
+    WARN("too many modification parameters.")
+  modi__paire[ftype]= fe;
+  modi_active= true;
+  modi_activetype[ftype]= true;
+  }  // end   modi_parse()
+
+static char* modi_check_key= "-",*modi_check_val= "-";
+  static bool modi_check_add= false;
+  // return values of procedure modi_check();
+  // the values are valid only if the previous call to modi_check()
+  // has returned 'true';
+
+static inline bool modi_check(int otype,char* key,char* val) {
+  // check if OSM object matches modification criteria;
+  // otype: 0: node; 1: way; 2: relation;
+  // key,val: key and value;
+  // return: given key/val pair matches modification criteria;
+  //         modi_check_key,modi_check_val: destination key/val;
+  //         modi_check_add: the destination key/val shall be added
+  //                         instead of replacing the old key/val pair;
+  modi__pair_t* fp,*fe;
+
+  fp= modi__pair[otype]; fe= modi__paire[otype];
+  while(fp<fe) {  // for every key/val pair in filter
+    if(*(int16_t*)(fp->k)==0) {  // no key given
+      if(modi__cmp(val,fp->v))  // just compare the value
+        goto modi_check_found;
+      }
+    else {  // key given
+      if(modi__cmp(key,fp->k) &&
+          (*(int16_t*)(fp->k)==0 || modi__cmp(val,fp->v)))
+          // compare key and value (if any)
+      goto modi_check_found;
+      }
+    fp++;
+    }  // for every key/val pair in filter
+  return false;
+modi_check_found:
+  if(fp->nk[0]!=0)  // there is a destination key
+    modi_check_key= fp->nk;  // take that destination key
+  else
+    modi_check_key= key;
+      // take source key instead
+  if(fp->nv[0]!=0)  // there is a destination value
+    modi_check_val= fp->nv;  // take that destination value
+  else
+    modi_check_val= val;
+      // take source value instead
+  modi_check_add= fp->add;  // publish key/val add request
+  return true;
+  }  // end   modi_check()
+
+#define modi_CHECK(ot,k,v) \
+  (modi_active && modi_activetype[ot] && modi_check(ot,k,v))
+  // prevents procedure call in case there are no modifications applied
+
+//------------------------------------------------------------
+// end   Module modi_   OSM tag modification module
+//------------------------------------------------------------
+
+
+
+//------------------------------------------------------------
 // Module posi_   OSM position module
 //------------------------------------------------------------
 
 // this module provides a geocoordinate table for to store
 // the coordinates of all OSM objects;
 // the procedures posi_set() (resp. posi_setbbox()) and
-// posi_get() allow access to this tables;
+// posi_get() allow access to this table;
 // as usual, all identifiers of a module have the same prefix,
 // in this case 'posi'; an underline will follow for a global
 // accessible identifier, two underlines if the identifier
@@ -5558,7 +6706,7 @@ return 0;
     posi__mem_size = 16;
     posi__mem_mask = ~0x0f;
     posi__mem_increment = 2;
-  }
+    }
   siz= posi__mem_size*global_maxobjects;
   posi__mem= (posi__mem_t*)malloc(siz);
   if(posi__mem==NULL)  // not enough memory
@@ -6189,9 +7337,10 @@ return;
 
 // this module provides procedures to use a temporary file for
 // storing a list of ways which have to be marked as 'inside';
-// this is used if option --complex-ways is invoked;
+// this is used if one or both options --complete-multipolygons
+// or --complete-boundaries is invoked;
 // as usual, all identifiers of a module have the same prefix,
-// in this case 'posi'; an underline will follow for a global
+// in this case 'cww'; an underline will follow for a global
 // accessible identifier, two underlines if the identifier
 // is not meant to be accessed from outside this module;
 // the sections of private and public definitions are separated
@@ -7845,11 +8994,11 @@ write_xmlstr(val);
 
 static inline void wo_addbboxtags(bool fornode,
     int32_t x_min, int32_t y_min,int32_t x_max, int32_t y_max) {
-  // adds tags for bbox and box area if requested by
-  // global_addbbox, global_addbboxarea resp. global_addbboxweight;
+  // adds tags for bbox, bbox width and box area if requested by
+  // global_addbbox, global_addbboxarea, global_addbboxweight,
+  // global_addbboxwidth resp. global_addbboxwidthweight;
   // fornode: add the tag(s) to a node, not to way/rel;
   char s[84],*sp;
-  int64_t area;
 
   if(global_addbbox) {  // add bbox tags
     sp= s;
@@ -7867,6 +9016,8 @@ static inline void wo_addbboxtags(bool fornode,
     }  // add bbox tags
   if(global_addbboxarea|global_addbboxweight) {
       // add bbox area tags OR add bbox weight tags
+    int64_t area;
+
     area= (int64_t)(x_max-x_min)*(int64_t)(y_max-y_min)/
       cosrk((y_min+y_max)/2);
     if(global_addbboxarea) {  // add bbox area tags
@@ -7884,6 +9035,29 @@ static inline void wo_addbboxtags(bool fornode,
         wo_wayrel_keyval("bBoxWeight",s);
       }  // add bbox weight tags
     }  // add bbox area tags OR add bbox weight tags
+  if(global_addbboxwidth|global_addbboxwidthweight) {
+      // add bbox width tags OR add bbox width weight tags
+    int32_t xwidth,ywidth,width;
+
+    xwidth= lonadapt(x_max-x_min,(y_min+y_max)/2);
+    ywidth= y_max-y_min;
+    width= xwidth>ywidth? xwidth: ywidth;  // width in 100 nano degrees
+    width/=90;
+    if(global_addbboxwidth) {  // add bbox width tags
+      write_createsint32(width,s);
+      if(fornode)
+        wo_node_keyval("bBoxWidth",s);
+      else
+        wo_wayrel_keyval("bBoxWidth",s);
+      }  // add bbox width tags
+    if(global_addbboxwidthweight) {  // add bbox width weight tags
+      write_createsint32(msbit(width),s);
+      if(fornode)
+        wo_node_keyval("bBoxWidthWeight",s);
+      else
+        wo_wayrel_keyval("bBoxWidthWeight",s);
+      }  // add bbox width weight tags
+    }  // add bbox width tags OR add bbox width weight tags
   } // end wo_addbboxtags()
 
 //------------------------------------------------------------
@@ -8049,7 +9223,7 @@ static inline uint32_t oo__strtouint32(const char* s) {
 
 #if 0  // presently unused
 static inline int32_t oo__strtosint32(const char* s) {
-  // read a number and convert it to a signed 64-bit integer;
+  // read a number and convert it to a signed 32-bit integer;
   // return: number;
   int sign;
   int32_t i;
@@ -9074,13 +10248,14 @@ return 1;
 
 int dependencystage;
   // stage of the processing of interobject dependencies:
-  // interrelation dependencies, --complete-ways or --complex-ways;
+  // interrelation dependencies, --complete-ways,
+  // --complete-multipolygons or --complete-boundaries;
   // processing in stages allows us to reprocess parts of the data;
   // abbrevation "ht" means hash table (module hash_);
   //
   // 0: no recursive processing at all;
   //
-  // option --complex-ways:
+  // option --complete-multipolygons:
   // 11:     no output;
   //         for each node which is inside the borders,
   //           set flag in ht;
@@ -9211,7 +10386,7 @@ static int oo_main() {
   char** refrolee,**refrolep;  // pointer in array
   #define oo__keyvalM 8000  // changed from 4000 to 8000
     // because there are old ways with this many key/val pairs
-    // in full istory planet due to malicious Tiger import
+    // in full history planet due to malicious Tiger import
   char* key[oo__keyvalM],*val[oo__keyvalM];
   char** keyee;  // end address of first array
   char** keye,**keyp;  // pointer in array
@@ -9277,7 +10452,7 @@ return 5;
       // (borders to apply AND relations are required) OR
       // user wants ways and relations to be converted to nodes
     // initiate recursive processing;
-    if(global_complexways) {
+    if(global_complex) {
       oo__dependencystage(11);
         // 11:     no output;
         //         for each node which is inside the borders,
@@ -9317,7 +10492,9 @@ return 28;
   else {
     oo__dependencystage(0);  // no recursive processing
     global_completeways= false;
-    global_complexways= false;
+    global_complex= false;
+    global_completemp= false;
+    global_completeboundaries= false;
     }
 
   // print file timestamp and nothing else if requested
@@ -9872,9 +11049,9 @@ return 23;
           if(oo__xmlkey[0]=='i' && oo__xmlkey[1]=='d') // id
             id= oo__strtosint64(oo__xmlval);
           else if(oo__xmlkey[0]=='l') {  // letter l
-            if(oo__xmlkey[1]=='o') // lon
+            if(oo__xmlkey[1]=='o')  // lon
               lon= oo__strtodeg(oo__xmlval);
-            else if(oo__xmlkey[1]=='a') // lon
+            else if(oo__xmlkey[1]=='a')  // lan
               lat= oo__strtodeg(oo__xmlval);
             }  // end   letter l
           else if(oo__xmlkey[0]=='v' && oo__xmlkey[1]=='i') {  // visible
@@ -10075,6 +11252,7 @@ return 23;
           bool relinside;  // this relation lies inside
           bool wayinside;  // at least one way lies inside
           bool ismp;  // this relation is a multipolygon
+                      // or a boundary
 
           relinside= wayinside= ismp= false;
           refidp= refid; reftypep= reftype; refrolep= refrole;
@@ -10085,7 +11263,7 @@ return 23;
             if(!wayinside && rt==1 && (strcmp(rr,"outer")==0 ||
                 strcmp(rr,"inner")==0) && hash_geti(1,ri))
                 // referenced object is a way and part of
-                // a multipolygon AND lies inside
+                // a multipolygon (or boundary) AND lies inside
               wayinside= true;
             refidp++; reftypep++; refrolep++;
             }  // end   for every referenced object
@@ -10094,27 +11272,30 @@ return 23;
             if(wayinside) {  // at least one way lies inside
               keyp= key; valp= val;
               while(keyp<keye) {  // for all key/val pairs of this object
-                if(strcmp(*keyp,"type")==0 &&
-                    strcmp(*valp,"multipolygon")==0) {
-                  ismp= true;
+                if(strcmp(*keyp,"type")==0) {
+                  if(global_completemp &&
+                        strcmp(*valp,"multipolygon")==0 ||
+                      global_completeboundaries &&
+                        strcmp(*valp,"boundary")==0)
+                    ismp= true;
               break;
                   }
                 keyp++; valp++;
                 }  // for all key/val pairs of this object
-              if(ismp) {  // is multipolygon
+              if(ismp) {  // is multipolygon or boundary
                 refidp= refid; reftypep= reftype; refrolep= refrole;
                 while(refidp<refide) {  // for every referenced object
                   ri= *refidp; rt= *reftypep; rr= *refrolep;
                   if(rt==1 && (strcmp(rr,"outer")==0 ||
                       strcmp(rr,"inner")==0) &&
                       !hash_geti(1,ri)) {  // referenced object
-                      // is a way and part of the multipolygon AND
-                      // has not yet a flag in ht
+                      // is a way and part of the multipolygon resp.
+                      // boundary AND has not yet a flag in ht
                     cww_ref(ri);  // write id of the way
                     }
                   refidp++; reftypep++; refrolep++;
                   }  // end   for every referenced object
-                }  // is multipolygon
+                }  // is multipolygon or boundary
               }  // at least one way lies inside
             }  // relation lies inside
           }  // relation
@@ -10340,8 +11521,15 @@ return 26;
           wo_node(id,
             hisver,histime,hiscset,hisuid,hisuser,lon,lat);
           keyp= key; valp= val;
-          while(keyp<keye)  // for all key/val pairs of this object
-            wo_node_keyval(*keyp++,*valp++);
+          while(keyp<keye) {  // for all key/val pairs of this object
+            if(modi_CHECK(otype,*keyp,*valp)) {
+              if(modi_check_add) wo_node_keyval(*keyp++,*valp++);
+              else keyp++; valp++;
+              wo_node_keyval(modi_check_key,modi_check_val);
+              }
+            else
+              wo_node_keyval(*keyp++,*valp++);
+            }  // for all key/val pairs of this object
           wo_node_close();
           }  // end   not to drop
         }  // end   node lies inside
@@ -10475,8 +11663,16 @@ return 26;
                 if(global_add)
                   wo_addbboxtags(true,x_min,y_min,x_max,y_max);
                 keyp= key; valp= val;
-                while(keyp<keye)  // for all key/val pairs of this object
-                  wo_node_keyval(*keyp++,*valp++);
+                while(keyp<keye) {
+                    // for all key/val pairs of this object
+                  if(modi_CHECK(otype,*keyp,*valp)) {
+                    if(modi_check_add) wo_node_keyval(*keyp++,*valp++);
+                    else keyp++; valp++;
+                    wo_node_keyval(modi_check_key,modi_check_val);
+                    }
+                  else
+                    wo_node_keyval(*keyp++,*valp++);
+                  }  // for all key/val pairs of this object
                 wo_node_close();
                 }  // there is at least one coordinate available
               }  // convert all objects to nodes
@@ -10492,8 +11688,16 @@ return 26;
               if(global_add)
                 wo_addbboxtags(false,x_min,y_min,x_max,y_max);
               keyp= key; valp= val;
-              while(keyp<keye)  // for all key/val pairs of this object
-                wo_wayrel_keyval(*keyp++,*valp++);
+              while(keyp<keye) {
+                  // for all key/val pairs of this object
+                if(modi_CHECK(otype,*keyp,*valp)) {
+                  if(modi_check_add) wo_wayrel_keyval(*keyp++,*valp++);
+                  else keyp++; valp++;
+                  wo_wayrel_keyval(modi_check_key,modi_check_val);
+                  }
+                else
+                  wo_wayrel_keyval(*keyp++,*valp++);
+                }  // for all key/val pairs of this object
               wo_way_close();
               }  // objects are not to be converted to nodes
             }  // coordinates of ways shall be calculated
@@ -10507,8 +11711,16 @@ return 26;
               refidp++;
               }  // end   for every referenced node
             keyp= key; valp= val;
-            while(keyp<keye)  // for all key/val pairs of this object
-              wo_wayrel_keyval(*keyp++,*valp++);
+            while(keyp<keye) {
+                // for all key/val pairs of this object
+              if(modi_CHECK(otype,*keyp,*valp)) {
+                if(modi_check_add) wo_wayrel_keyval(*keyp++,*valp++);
+                else keyp++; valp++;
+                wo_wayrel_keyval(modi_check_key,modi_check_val);
+                }
+              else
+                wo_wayrel_keyval(*keyp++,*valp++);
+              }  // for all key/val pairs of this object
             wo_way_close();
             }  // coordinates of ways need not to be calculated
           }  // end   not ways to drop
@@ -10623,8 +11835,16 @@ return 26;
                 wo_addbboxtags(true,
                   posi_xy[2],posi_xy[3],posi_xy[4],posi_xy[5]);
               keyp= key; valp= val;
-              while(keyp<keye)  // for all key/val pairs of this object
-                wo_node_keyval(*keyp++,*valp++);
+              while(keyp<keye) {
+                  // for all key/val pairs of this object
+                if(modi_CHECK(otype,*keyp,*valp)) {
+                  if(modi_check_add) wo_node_keyval(*keyp++,*valp++);
+                  else keyp++; valp++;
+                  wo_node_keyval(modi_check_key,modi_check_val);
+                  }
+                else
+                  wo_node_keyval(*keyp++,*valp++);
+                }  // for all key/val pairs of this object
               wo_node_close();
               }  // stored coordinates are valid
             }  // relations are to be converted to nodes
@@ -10674,8 +11894,16 @@ return 26;
                   posi_xy[2],posi_xy[3],posi_xy[4],posi_xy[5]);
               }
             keyp= key; valp= val;
-            while(keyp<keye)  // for all key/val pairs of this object
-              wo_wayrel_keyval(*keyp++,*valp++);
+            while(keyp<keye) {
+                // for all key/val pairs of this object
+              if(modi_CHECK(otype,*keyp,*valp)) {
+                if(modi_check_add) wo_wayrel_keyval(*keyp++,*valp++);
+                else keyp++; valp++;
+                wo_wayrel_keyval(modi_check_key,modi_check_val);
+                }
+              else
+                wo_wayrel_keyval(*keyp++,*valp++);
+              }  // for all key/val pairs of this object
             wo_relation_close();
             }  // stage!=3 OR not --all-to-nodes
           }  // end   no borders OR at least one node inside
@@ -11323,7 +12551,7 @@ return true;
     if(function_cut_mode==1)
       argv[argc++]= "--complete-ways";
     if(function_cut_mode==2)
-      argv[argc++]= "--complex-ways";
+      argv[argc++]= "--complete-multipolygons";
     if(function_only_statistics)
       argv[argc++]= "--out-statistics";
     else if(function_statistics)
@@ -11402,6 +12630,7 @@ int main(int argc,char** argv) {
   // initializations
   usesstdin= false;
   h_n= h_w= h_r= 0;
+  modi_ini();
   #if __WIN32__
     setmode(fileno(stdout),O_BINARY);
     setmode(fileno(stdin),O_BINARY);
@@ -11662,7 +12891,7 @@ return 0;
   continue;  // take next parameter
       }
     if(strcmp(a,"--out-timestamp")==0) {
-        // user wants output in osc format
+        // user wants output with timestamp
       global_outtimestamp= true;
   continue;  // take next parameter
       }
@@ -11682,9 +12911,18 @@ return 0;
       global_completeways= true;
   continue;  // take next parameter
       }
-    if(strcmp(a,"--complex-ways")==0) {
-        // do not clip multipolygons when applying borders
-      global_complexways= true;
+    if(strcmp(a,"--complete-multipolygons")==0 ||
+        strcmp(a,"--complex-ways")==0) {
+        // do not clip multipolygons when applying borders;
+        // the term "--complex-ways" is deprecated but still supported;
+      global_complex= true;
+      global_completemp= true;
+  continue;  // take next parameter
+      }
+    if(strcmp(a,"--complete-boundaries")==0) {
+        // do not clip boundaries when applying borders
+      global_complex= true;
+      global_completeboundaries= true;
   continue;  // take next parameter
       }
     if(strcmp(a,"--all-to-nodes")==0) {
@@ -11722,6 +12960,20 @@ return 0;
         // compute a bounding box and add its weight as tag
       global_calccoords= -1;
       global_addbboxweight= true;
+      global_add= true;
+  continue;  // take next parameter
+      }
+    if(strcmp(a,"--add-bboxwidth-tags")==0) {
+        // compute a bounding box and add its width as tag
+      global_calccoords= -1;
+      global_addbboxwidth= true;
+      global_add= true;
+  continue;  // take next parameter
+      }
+    if(strcmp(a,"--add-bboxwidthweight-tags")==0) {
+        // compute a bounding box and add its width weight as tag
+      global_calccoords= -1;
+      global_addbboxwidthweight= true;
       global_add= true;
   continue;  // take next parameter
       }
@@ -11810,6 +13062,17 @@ return 4;
         }  // end   border consideration by polygon file
   continue;  // take next parameter
       }
+    #define F(t) modi_parse(t,a+l);
+    #define D(p,f) if((l= strzlcmp(a,#p))>0) { f continue; }
+    D(--modify-tags=,F(0)F(1)F(2))
+    D(--modify-node-tags=,F(0))
+    D(--modify-way-tags=,F(1))
+    D(--modify-relation-tags=,F(2))
+    D(--modify-node-way-tags=,F(0)F(1))
+    D(--modify-node-relation-tags=,F(0)F(2))
+    D(--modify-way-relation-tags=,F(1)F(2))
+    #undef D
+    #undef F
     if(strcmp(a,"-")==0) {  // use standard input
       usesstdin= true;
       if(oo_open(NULL))  // file cannot be read
@@ -11833,11 +13096,16 @@ return 2;
     PERR("cannot apply --complete-ways when reading standard input.")
 return 2;
     }
-  if(usesstdin && global_complexways) {
-    PERR("cannot apply --complex-ways when reading standard input.")
+  if(usesstdin && global_completemp) {
+    PERR("cannot apply --complete-multipolygons when reading"
+      " standard input.")
 return 2;
     }
-  if(global_completeways || global_complexways) {
+  if(usesstdin && global_completeboundaries) {
+    PERR("cannot apply --complete-boundaries when reading standard input.")
+return 2;
+    }
+  if(global_completeways || global_complex) {
     uint32_t zlibflags;
     zlibflags= zlibCompileFlags();
     if(loglevel>=2) {
@@ -11897,7 +13165,7 @@ return 6;
       fprintf(stderr,"osmconvert: Not enough memory for .o5m buffer.\n");
 return 5;
       }
-    }  // end   user wants borders
+    }  // end   .o5m format is needed as output
   if(global_diff) {
     if(oo_ifn!=2) {
       PERR("Option --diff requires exactly two input files.");
