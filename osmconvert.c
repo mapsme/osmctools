@@ -11273,10 +11273,10 @@ return 23;
               keyp= key; valp= val;
               while(keyp<keye) {  // for all key/val pairs of this object
                 if(strcmp(*keyp,"type")==0) {
-                  if(global_completemp &&
-                        strcmp(*valp,"multipolygon")==0 ||
-                      global_completeboundaries &&
-                        strcmp(*valp,"boundary")==0)
+                  if((global_completemp &&
+                        strcmp(*valp,"multipolygon")==0) ||
+                      (global_completeboundaries &&
+                        strcmp(*valp,"boundary")==0))
                     ismp= true;
               break;
                   }
